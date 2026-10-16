@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Resiliency Dashboard</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0d1117; color: #c9d1d9; overflow: hidden; }
+  header { padding: 12px 24px; border-bottom: 1px solid #21262d; display: flex; align-items: center; gap: 16px; }
+  h1 { font-size: 18px; font-weight: 600; }
+  .badge { font-size: 11px; padding: 2px 8px; border-radius: 10px; background: #238636; color: #fff; }
+  .badge.disconnected { background: #da3633; }
+  main { display: flex; height: calc(100vh - 53px); }
+  .controls { width: 250px; padding: 16px; border-right: 1px solid #21262d; display: flex; flex-direction: column; gap: 10px; overflow-y: auto; }
+  .controls h2 { font-size: 12px; text-transform: uppercase; color: #8b949e; letter-spacing: .05em; margin-bottom: 4px; }
+  button { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; border-radius: 6px; padding: 10px 12px; font-size: 13px; cursor: pointer; text-align: left; }
+  button:hover { background: #30363d; border-color: #8b949e; }
+  button .sub { display: block; font-size: 11px; color: #8b949e; margin-top: 2px; }
+  button.run-all { background: #1f6feb; border-color: #1f6feb; color: #fff; font-weight: 600; }
+  .viz { flex: 1; display: flex; flex-direction: column; overflow: hidden; position: relative; }
+  .legend { display: flex; gap: 14px; padding: 8px 16px; font-size: 11px; color: #8b949e; border-bottom: 1px solid #21262d; flex-wrap: wrap; align-items: center; }
+  .legend span::before { content: '●'; margin-right: 5px; }
+  .zoombar { margin-left: auto; display: flex; gap: 6px; align-items: center; }
+  .zoombar button { padding: 3px 10px; font-size: 12px; }
+  .zoombar span { font-size: 11px; color: #8b949e; }
+  .zoombar label { display: flex; gap: 4px; align-items: center; font-size: 11px; color: #8b949e; }
+  .zoombar label::before { content: ''; }
+  canvas { flex: 1; width: 100%; cursor: grab; }
+  canvas.dragging { cursor: grabbing; }
+  #log { height: 170px; overflow-y: auto; border-top: 1px solid #21262d; padding: 8px 16px; font-family: 'Cascadia Code', Consolas, monospace; font-size: 12px; }
+  #log div { padding: 1px 0; white-space: nowrap; }
+  #log .t { color: #6e7681; margin-right: 8px; }
+  .lg-attempt { color: #58a6ff; } .lg-fail { color: #f85149; } .lg-wait { color: #d29922; }
+  .lg-success { color: #3fb950; } .lg-rejected { color: #da3633; } .lg-state { color: #bc8cff; }
+  .lg-queued { color: #8b949e; } .lg-info { color: #79c0ff; } .lg-done { color: #7ee787; }
+  .lg-exhausted { color: #ff7b72; }
+  .legend .c-attempt::before { color: #58a6ff; } .legend .c-fail::before { color: #f85149; }
+  .legend .c-wait::before { color: #d29922; } .legend .c-success::before { color: #3fb950; }
+  .legend .c-rejected::before { color: #da3633; } .legend .c-state::before { color: #bc8cff; }
+  .legend .c-queued::before { color: #8b949e; }
+  /* hover tooltip */
+  #tip { position: fixed; display: none; pointer-events: none; background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 8px 10px; font-size: 12px; max-width: 340px; z-index: 30; box-shadow: 0 4px 14px #0008; }
+  #tip .tt { font-weight: 600; margin-bottom: 2px; }
+  /* pinned detail card */
+  #detail { position: absolute; left: 16px; bottom: 190px; width: 360px; background: #161b22; border: 1px solid #388bfd; border-radius: 8px; padding: 12px 14px; font-size: 12.5px; display: none; z-index: 20; box-shadow: 0 6px 20px #000a; }
+  #detail h3 { font-size: 13px; margin-bottom: 6px; }
+  #detail .meta { color: #8b949e; font-size: 11px; margin-bottom: 8px; }
+  #detail .expl { line-height: 1.5; color: #c9d1d9; }
+  #detail .x { position: absolute; top: 6px; right: 10px; cursor: pointer; color: #8b949e; }
+  /* pattern explainer modal */
+  #modal { position: fixed; inset: 0; background: #010409cc; display: none; align-items: center; justify-content: center; z-index: 40; }
+  #modal .card { width: 560px; max-width: 92vw; background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 24px; }
+  #modal h2 { font-size: 17px; margin-bottom: 10px; }
+  #modal p { font-size: 13.5px; line-height: 1.6; margin-bottom: 10px; color: #c9d1d9; }
+  #modal .watch { background: #0d1117; border-left: 3px solid #1f6feb; padding: 8px 12px; font-size: 12.5px; border-radius: 4px; }
+  #modal .x { float: right; cursor: pointer; color: #8b949e; font-size: 18px; }
+  .lanehit { cursor: pointer; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Resiliency Test Dashboard</h1>
+  <span class="badge" id="conn">connecting…</span>
+  <span style="color:#8b949e;font-size:12px">Failsafe policies · live executions · click lane names for pattern guides</span>
+</header>
+<main>
+  <div class="controls">
+    <h2>Scenarios</h2>
+    <button onclick="run('retry-flaky')">Retry — flaky endpoint<span class="sub">fails 2×, succeeds on attempt 3</span></button>
+    <button onclick="run('retry-backoff')">Retry — exponential backoff<span class="sub">dead endpoint, watch delays double</span></button>
+    <button onclick="run('breaker')">Circuit breaker lifecycle<span class="sub">CLOSED → OPEN → HALF_OPEN → CLOSED</span></button>
+    <button onclick="run('bulkhead')">Bulkhead under load<span class="sub">6 calls, 2 permits — queueing</span></button>
+    <button onclick="run('ratelimiter')">Rate limiter pacing<span class="sub">5 calls through 2/sec smooth limiter</span></button>
+    <button class="run-all" onclick="run('all')">▶ Run all scenarios</button>
+    <button onclick="clearAll()">Clear timeline</button>
+    <h2 style="margin-top:14px">How to explore</h2>
+    <div style="font-size:11.5px;color:#8b949e;line-height:1.7">
+      <b style="color:#c9d1d9">Scroll</b> — zoom in/out on the timeline<br>
+      <b style="color:#c9d1d9">Drag</b> — pan left/right in time<br>
+      <b style="color:#c9d1d9">Hover a dot</b> — quick facts<br>
+      <b style="color:#c9d1d9">Click a dot</b> — pin the full explanation<br>
+      <b style="color:#c9d1d9">Click a lane name</b> — pattern guide<br>
+      <b style="color:#c9d1d9">Double-click</b> — reset zoom to fit
+    </div>
+    <h2 style="margin-top:14px">State</h2>
+    <div id="state" style="font-size:12px;color:#8b949e;line-height:1.8">breaker: <b>CLOSED</b></div>
+  </div>
+  <div class="viz">
+    <div class="legend">
+      <span class="c-attempt">attempt / granted</span>
+      <span class="c-fail">failure</span>
+      <span class="c-wait">wait / in-flight (bar = duration)</span>
+      <span class="c-success">success</span>
+      <span class="c-rejected">rejected</span>
+      <span class="c-state">breaker state</span>
+      <span class="c-queued">queued</span>
+      <div class="zoombar">
+        <label><input type="checkbox" id="autofit" checked>auto-fit while running</label>
+        <button onclick="zoomBtn(0.8)">＋ zoom in</button>
+        <button onclick="zoomBtn(1.25)">－ zoom out</button>
+        <button onclick="fitView()">fit</button>
+        <span id="zoominfo">window: 8.0s</span>
+      </div>
+    </div>
+    <canvas id="tl"></canvas>
+    <div id="log"></div>
+  </div>
+</main>
+<div id="tip"></div>
+<div id="detail"><span class="x" onclick="detail.style.display='none'">✕</span>
+  <h3 id="d-title"></h3><div class="meta" id="d-meta"></div><div class="expl" id="d-expl"></div>
+</div>
+<div id="modal" onclick="if(event.target===this)this.style.display='none'">
+  <div class="card"><span class="x" onclick="modal.style.display='none'">✕</span>
+    <h2 id="m-title"></h2><div id="m-body"></div>
+  </div>
+</div>
+<script>
+const LANES = ['retry-flaky','retry-backoff','breaker','bulkhead','ratelimiter'];
+const LANE_LABELS = {
+  'retry-flaky':'Retry · flaky',
+  'retry-backoff':'Retry · backoff',
+  'breaker':'Circuit breaker',
+  'bulkhead':'Bulkhead',
+  'ratelimiter':'Rate limiter'
+};
+const COLORS = {
+  attempt:'#58a6ff', fail:'#f85149', wait:'#d29922', success:'#3fb950',
+  rejected:'#da3633', state:'#bc8cff', queued:'#8b949e', info:'#79c0ff',
+  done:'#7ee787', exhausted:'#ff7b72'
+};
+const TYPE_NAMES = {
+  attempt:'Execution attempt', fail:'Failed attempt', wait:'Wait / delay',
+  success:'Success', rejected:'Rejected (policy said no)', state:'State change',
+  queued:'Queued / waiting', info:'Info', done:'Scenario done', exhausted:'Retries exhausted'
+};
+
+/* ---- plain-English pattern guides (click a lane name) ---- */
+const GUIDES = {
+  'retry-flaky': {
+    title: 'Retry Policy — transient failure recovery',
+    body: `<p><b>What it does:</b> when a call throws, the policy waits a short delay and runs it again, up to a max number of attempts.</p>
+      <p><b>The story here:</b> the endpoint fails twice with HTTP 503, then recovers. The caller never sees the failures — retry absorbed them.</p>
+      <div class="watch"><b>What to watch:</b> blue dots = endpoint calls; red dots = failures; amber bars = the delay between attempts; green = final success. Count 3 calls, 2 waits, 1 success.</div>`
+  },
+  'retry-backoff': {
+    title: 'Retry Policy — exponential backoff to exhaustion',
+    body: `<p><b>What it does:</b> same retry, but the delay between attempts grows: 150ms → 300ms → 600ms. A struggling service gets breathing room instead of a hammering.</p>
+      <p><b>The story here:</b> the endpoint never recovers. After maxAttempts, the last exception is thrown to the caller.</p>
+      <div class="watch"><b>What to watch:</b> the amber wait bars get LONGER each round — that's exponential backoff. The dark-red dot at the end = RETRIES EXCEEDED. Zoom in on the bars to compare their lengths.</div>`
+  },
+  'breaker': {
+    title: 'Circuit Breaker — fail fast while a dependency is down',
+    body: `<p><b>What it does:</b> after enough failures it OPENS — calls are rejected instantly without touching the dependency. After a delay it goes HALF_OPEN and admits a trial call; success CLOSES it.</p>
+      <p><b>The story here:</b> 2 failures trip it open. A call arrives while open → rejected with zero work done. After ~1.5s, a probe call is admitted, succeeds, breaker closes.</p>
+      <div class="watch"><b>What to watch:</b> purple dots = state changes; the bright-red dot is a rejection — note it has NO blue attempt dot before it (the call died at the gate). Hover the last purple dot to see CLOSED.</div>`
+  },
+  'bulkhead': {
+    title: 'Bulkhead — cap concurrent executions',
+    body: `<p><b>What it does:</b> limits how many executions can be in flight at once (here: 2 permits). Excess callers wait in FIFO order or fail fast.</p>
+      <p><b>The story here:</b> 6 calls race in on 6 threads. Only 2 run at a time; the rest queue and start as permits free up.</p>
+      <div class="watch"><b>What to watch:</b> the amber horizontal bars are in-flight executions — zoom in and you'll see they never stack more than 2 deep. Gray dots = calls waiting for a permit.</div>`
+  },
+  'ratelimiter': {
+    title: 'Rate Limiter — pace executions over time',
+    body: `<p><b>What it does:</b> caps executions per time period (here: 2 per second, smooth). Unlike a bulkhead (concurrency), this is about throughput over time.</p>
+      <p><b>The story here:</b> 5 calls arrive at once but the limiter hands out a permit every ~500ms, so calls are paced.</p>
+      <div class="watch"><b>What to watch:</b> the blue "GRANTED" dots are spaced evenly on the timeline — ~500ms apart. That's smooth pacing in action.</div>`
+  }
+};
+
+/* ---- per-event explanations (click a dot) ---- */
+function explain(e) {
+  const L = LANE_LABELS[e.lane];
+  const base = `<b>${L}</b><br><br>`;
+  switch (e.lane + ':' + e.type) {
+    case 'retry-flaky:attempt': return base + 'Failsafe invoked your code — an outgoing call. Each attempt gets its own dot. This one ran inside the retry policy.';
+    case 'retry-flaky:fail': return base + 'The call threw an exception. The retry policy counted it and — because attempts remain — scheduled another try instead of giving up.';
+    case 'retry-flaky:wait': return base + 'The policy is sleeping before the next attempt. This bar is the delay (fixed 400ms here).';
+    case 'retry-flaky:success': return base + 'An attempt finally succeeded. The result is returned to the caller as if nothing went wrong — the two failures were absorbed.';
+    case 'retry-backoff:attempt': return base + 'An attempt against an endpoint that never recovers.';
+    case 'retry-backoff:fail': return base + 'Another failure. With backoff, each wait is longer than the last.';
+    case 'retry-backoff:wait': return base + 'A backoff wait. Compare its length to the previous wait bar — delays grow exponentially (150→300→600ms).';
+    case 'retry-backoff:exhausted': return base + 'All attempts used up. The LAST exception is thrown to the caller — there is no special "retries exceeded" exception.';
+    case 'breaker:state': return base + 'The circuit breaker changed state. OPEN = reject everything instantly; HALF_OPEN = admit a trial call; CLOSED = normal flow.';
+    case 'breaker:fail': return base + 'A call through the breaker failed. Failures count toward the threshold (2) that trips it open.';
+    case 'breaker:rejected': return base + 'The breaker is OPEN, so this call was rejected BEFORE the supplier ran — zero cost, zero wait. This is "fail fast".';
+    case 'breaker:attempt': return base + 'This call was admitted — either while CLOSED, or as the half-open probe after the delay elapsed.';
+    case 'breaker:success': return base + 'The probe succeeded, meeting the success threshold → breaker CLOSED and normal flow resumed.';
+    case 'bulkhead:queued': return base + 'A caller arrived but no permit was free — it waits (FIFO). In a zero-wait bulkhead it would have been rejected instead.';
+    case 'bulkhead:attempt': return base + 'This call holds a permit and is executing. The bar is its in-flight duration — hover it and check "concurrency=N".';
+    case 'bulkhead:success': return base + 'Call finished and released its permit back to the bulkhead — a queued caller can now start.';
+    case 'bulkhead:done': return base + 'All 6 calls completed. The key result: in-flight concurrency never exceeded the 2-permit cap.';
+    case 'ratelimiter:queued': return base + 'A caller requested a permit. With a smooth limiter it may need to wait for its slot in the period.';
+    case 'ratelimiter:attempt': return base + 'A permit was granted — the call runs now. Notice how these dots are spaced ~500ms apart: that is the limiter pacing throughput.';
+    case 'ratelimiter:success': return base + 'Call finished. Note that finishing does NOT speed up the next grant — the limiter is about start times, not completions.';
+    default: return base + (TYPE_NAMES[e.type] || e.type) + ': ' + e.label;
+  }
+}
+
+/* ---------- state ---------- */
+const events = [];
+let t0 = null;
+let view = { start: 0, end: 8000 };   // visible window in relative ms
+let marks = [];                        // hit-test markers from last draw
+let hover = null;
+
+const cv = document.getElementById('tl');
+const ctx = cv.getContext('2d');
+const logEl = document.getElementById('log');
+const stateEl = document.getElementById('state');
+const connEl = document.getElementById('conn');
+const tip = document.getElementById('tip');
+const detail = document.getElementById('detail');
+const modal = document.getElementById('modal');
+const autofitEl = document.getElementById('autofit');
+const zoominfo = document.getElementById('zoominfo');
+
+function resize() {
+  cv.width = cv.clientWidth * devicePixelRatio;
+  cv.height = cv.clientHeight * devicePixelRatio;
+  draw();
+}
+window.addEventListener('resize', resize);
+
+function run(s) {
+  if (s === 'all') { events.length = 0; t0 = null; }
+  fetch('/run?scenario=' + s);
+}
+function clearAll() { events.length = 0; t0 = null; detail.style.display='none'; fitView(); logEl.innerHTML=''; }
+
+const es = new EventSource('/events');
+es.onopen = () => { connEl.textContent = 'live'; connEl.className = 'badge'; };
+es.onerror = () => { connEl.textContent = 'disconnected'; connEl.className = 'badge disconnected'; };
+es.onmessage = m => {
+  const e = JSON.parse(m.data);
+  if (t0 === null) t0 = e.t;
+  e.rel = e.t - t0;
+  events.push(e);
+  addLog(e);
+  updateState(e);
+  if (autofitEl.checked) fitView(false);
+  draw();
+};
+
+function addLog(e) {
+  const d = document.createElement('div');
+  d.className = 'lg-' + e.type;
+  d.innerHTML = '<span class="t">' + (e.rel/1000).toFixed(1) + 's</span>'
+    + '[' + LANE_LABELS[e.lane] + '] ' + e.label;
+  logEl.appendChild(d);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+function updateState(e) {
+  if (e.type === 'state' && e.lane === 'breaker')
+    stateEl.innerHTML = 'breaker: <b>' + e.label.split('->')[1].trim() + '</b>';
+}
+
+/* ---------- view: zoom & pan ---------- */
+function fitView(redraw = true) {
+  const maxRel = events.length ? Math.max(...events.map(e => e.rel + (e.dur||0))) : 8000;
+  view.start = 0;
+  view.end = Math.max(8000, maxRel * 1.05);
+  if (redraw) draw();
+}
+function zoomAt(factor, centerRel) {
+  const c = centerRel ?? (view.start + view.end) / 2;
+  const half = (view.end - view.start) * factor / 2;
+  view.start = Math.max(0, c - half);
+  view.end = Math.max(view.start + 200, c + half);   // min window 200ms
+  draw();
+}
+function zoomBtn(f) { autofitEl.checked = false; zoomAt(f); }
+
+let dragX = null, dragStart = 0;
+cv.addEventListener('wheel', ev => {
+  ev.preventDefault();
+  autofitEl.checked = false;
+  const rect = cv.getBoundingClientRect();
+  const frac = (ev.clientX - rect.left - 150) / (rect.width - 150 - 40);
+  const centerRel = view.start + Math.max(0, frac) * (view.end - view.start);
+  zoomAt(ev.deltaY > 0 ? 1.2 : 0.8, centerRel);
+}, { passive: false });
+cv.addEventListener('mousedown', ev => { dragX = ev.clientX; dragStart = view.start; cv.classList.add('dragging'); });
+window.addEventListener('mouseup', () => { dragX = null; cv.classList.remove('dragging'); });
+cv.addEventListener('mousemove', ev => {
+  const rect = cv.getBoundingClientRect();
+  if (dragX !== null) {
+    autofitEl.checked = false;
+    const pxPerMs = (cv.width / devicePixelRatio - 190) / (view.end - view.start);
+    const dMs = (ev.clientX - dragX) / pxPerMs;
+    view.start = Math.max(0, dragStart - dMs);
+    view.end = Math.max(view.start + 200, dragStart - dMs + (view.end - view.start));
+    draw();
+    return;
+  }
+  // hover hit-test
+  hover = hitTest(ev.clientX - rect.left, ev.clientY - rect.top);
+  if (hover) {
+    tip.style.display = 'block';
+    tip.style.left = (ev.clientX + 14) + 'px';
+    tip.style.top = (ev.clientY + 12) + 'px';
+    tip.innerHTML = '<div class="tt" style="color:' + COLORS[hover.type] + '">'
+      + (TYPE_NAMES[hover.type] || hover.type) + '</div>'
+      + '<div>' + hover.label + '</div>'
+      + '<div style="color:#8b949e;margin-top:3px">t=' + (hover.rel/1000).toFixed(2) + 's'
+      + (hover.dur ? ' · duration ' + hover.dur + 'ms' : '') + ' · click for explanation</div>';
+    cv.style.cursor = 'pointer';
+  } else {
+    tip.style.display = 'none';
+    cv.style.cursor = 'grab';
+  }
+});
+cv.addEventListener('mouseleave', () => tip.style.display = 'none');
+cv.addEventListener('dblclick', fitView);
+cv.addEventListener('click', ev => {
+  const rect = cv.getBoundingClientRect();
+  const x = ev.clientX - rect.left, y = ev.clientY - rect.top;
+  // lane label click?
+  if (x < 140) {
+    const laneIdx = laneAtY(y);
+    if (laneIdx >= 0) {
+      const g = GUIDES[LANES[laneIdx]];
+      document.getElementById('m-title').textContent = g.title;
+      document.getElementById('m-body').innerHTML = g.body;
+      modal.style.display = 'flex';
+      return;
+    }
+  }
+  if (hover) {
+    document.getElementById('d-title').textContent = TYPE_NAMES[hover.type] || hover.type;
+    document.getElementById('d-title').style.color = COLORS[hover.type];
+    document.getElementById('d-meta').textContent =
+      LANE_LABELS[hover.lane] + ' · t=' + (hover.rel/1000).toFixed(2) + 's' +
+      (hover.dur ? ' · ' + hover.dur + 'ms' : '');
+    document.getElementById('d-expl').innerHTML = explain(hover);
+    detail.style.display = 'block';
+  }
+});
+
+function laneAtY(cssY) {
+  const rowH = (cv.clientHeight - 50) / LANES.length;
+  const i = Math.floor((cssY - 20) / rowH);
+  return (i >= 0 && i < LANES.length) ? i : -1;
+}
+function hitTest(cssX, cssY) {
+  const dpr = devicePixelRatio;
+  for (const m of marks) {
+    const dx = cssX * dpr - m.x, dy = cssY * dpr - m.y;
+    if (dx * dx + dy * dy < (9 * dpr) * (9 * dpr)) return m.e;
+  }
+  return null;
+}
+
+/* ---------- draw ---------- */
+function fmtMs(ms) { return ms < 1000 ? Math.round(ms) + 'ms' : (ms/1000).toFixed(1) + 's'; }
+
+function draw() {
+  const W = cv.width, H = cv.height, dpr = devicePixelRatio;
+  ctx.clearRect(0, 0, W, H);
+  marks = [];
+  const left = 150 * dpr, top = 20 * dpr, bottom = 30 * dpr;
+  const rowH = (H - top - bottom) / LANES.length;
+  const span = view.end - view.start;
+  const scale = (W - left - 40 * dpr) / span;
+  zoominfo.textContent = 'window: ' + fmtMs(span) + ' (start ' + fmtMs(view.start) + ')';
+
+  LANES.forEach((lane, i) => {
+    const y = top + i * rowH;
+    ctx.fillStyle = i % 2 ? '#0d1117' : '#161b22';
+    ctx.fillRect(0, y, W, rowH);
+    ctx.fillStyle = '#58a6ff';
+    ctx.font = '600 ' + (12 * dpr) + 'px system-ui';
+    ctx.fillText(LANE_LABELS[lane], 12 * dpr, y + rowH / 2 + 4 * dpr);
+    ctx.fillStyle = '#21262d';
+    ctx.fillRect(12 * dpr, y + rowH / 2 + 8 * dpr, 100 * dpr, 2 * dpr);
+    ctx.strokeStyle = '#21262d';
+    ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(W, y); ctx.stroke();
+  });
+
+  // adaptive tick spacing so labels never crowd when zoomed
+  const tickSteps = [100, 250, 500, 1000, 2000, 5000, 10000];
+  let step = tickSteps.find(s => span / s <= 14) || 30000;
+  ctx.font = (10 * dpr) + 'px monospace';
+  for (let s = Math.floor(view.start / step) * step; s <= view.end; s += step) {
+    const x = left + (s - view.start) * scale;
+    ctx.fillStyle = '#484f58';
+    ctx.fillText(fmtMs(s), x - 10 * dpr, H - 8 * dpr);
+    ctx.strokeStyle = '#21262d33';
+    ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x, H - bottom); ctx.stroke();
+  }
+
+  for (const e of events) {
+    if (e.rel + (e.dur || 0) < view.start || e.rel > view.end) continue;
+    const i = LANES.indexOf(e.lane);
+    if (i < 0) continue;
+    const x = left + (e.rel - view.start) * scale;
+    const y = top + i * rowH + rowH / 2;
+    const color = COLORS[e.type] || '#c9d1d9';
+    if (e.dur > 0) {
+      const w = Math.max(e.dur * scale, 2 * dpr);
+      ctx.globalAlpha = 0.30;
+      ctx.fillStyle = color;
+      ctx.fillRect(x, y - 6 * dpr, w, 12 * dpr);
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = color;
+      ctx.strokeRect(x, y - 6 * dpr, w, 12 * dpr);
+    }
+    ctx.fillStyle = color;
+    ctx.beginPath(); ctx.arc(x, y, 5 * dpr, 0, Math.PI * 2); ctx.fill();
+    if (hover === e) {
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 2 * dpr;
+      ctx.beginPath(); ctx.arc(x, y, 8 * dpr, 0, Math.PI * 2); ctx.stroke();
+    }
+    // label when the lane has room for text (zoomed in)
+    if (span < 15000) {
+      ctx.fillStyle = '#8b949e';
+      ctx.font = (9 * dpr) + 'px system-ui';
+      const label = e.label.length > 48 ? e.label.slice(0, 46) + '…' : e.label;
+      ctx.fillText(label, x + 9 * dpr, y - 8 * dpr);
+    }
+    marks.push({ x, y, e });
+  }
+}
+resize();
+</script>
+</body>
+</html>
