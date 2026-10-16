@@ -1,0 +1,15 @@
+services:
+  resiliency-dashboard:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+    restart: unless-stopped
+    healthcheck:
+      # JRE image has no curl/wget — check the port with a shell TCP probe
+      test: ["CMD-SHELL", "bash -c '(exec 3<>/dev/tcp/localhost/8080) 2>/dev/null || exit 1'"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3

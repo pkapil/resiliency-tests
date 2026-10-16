@@ -42,6 +42,7 @@ public class ResiliencyDashboard {
         server.createContext("/", ResiliencyDashboard::index);
         server.createContext("/events", ResiliencyDashboard::events);
         server.createContext("/run", ResiliencyDashboard::run);
+        server.createContext("/health", ResiliencyDashboard::health);
         server.setExecutor(pool);
         server.start();
         System.out.println("Dashboard running on port " + port);
@@ -58,6 +59,17 @@ public class ResiliencyDashboard {
         ex.sendResponseHeaders(200, html.length);
         try (OutputStream os = ex.getResponseBody()) {
             os.write(html);
+        }
+    }
+
+    // Lightweight health check for Coolify / load balancers
+    private static void health(HttpExchange ex) throws IOException {
+        byte[] body = ("{\"status\":\"UP\",\"sseClients\":" + sseClients.size() + "}")
+                .getBytes(StandardCharsets.UTF_8);
+        ex.getResponseHeaders().set("Content-Type", "application/json");
+        ex.sendResponseHeaders(200, body.length);
+        try (OutputStream os = ex.getResponseBody()) {
+            os.write(body);
         }
     }
 
